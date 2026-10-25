@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070a16">
+  <title>Entrar — LeadFinder</title>
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body class="auth">
+  <main class="auth-wrap">
+    <section class="auth-intro">
+      <div class="brand"><span class="brand-mark">L</span>LeadFinder</div>
+      <h1>Encontre empresas que precisam do seu serviço.</h1>
+      <p class="muted">Busque negócios por cidade e segmento, organize seus leads e prepare abordagens e prompts profissionais para cada cliente.</p>
+    </section>
+    <section class="card auth-card" aria-labelledby="titulo">
+      <div class="brand" style="padding-bottom:12px"><span class="brand-mark">L</span>LeadFinder</div>
+      <h2 id="titulo">Entre na sua conta</h2>
+      <p class="muted" id="subtitulo">Acesse seu painel de prospecção.</p>
+      <form id="form" novalidate>
+        <div id="bloco-nome" class="hidden"><label for="nome">Nome completo</label><input id="nome" autocomplete="name" maxlength="100"></div>
+        <div id="bloco-tel" class="hidden"><label for="telefone">Telefone com DDD</label><input id="telefone" type="tel" autocomplete="tel" maxlength="20" placeholder="(86) 99999-0000"></div>
+        <label for="email">E-mail</label>
+        <input id="email" type="email" required autocomplete="email" placeholder="voce@gmail.com">
+        <div id="bloco-senha"><label for="senha">Senha</label>
+        <input id="senha" type="password" required minlength="6" autocomplete="current-password" placeholder="Mínimo de 6 caracteres"></div>
+        <button id="enviar" class="btn btn-primary btn-block" type="submit" style="margin-top:18px">Entrar</button>
+      </form>
+      <div class="msg" id="msg" role="status" aria-live="polite"></div>
+      <p class="small muted" style="margin-top:14px">
+        <button class="linkbtn" id="trocar" type="button">Criar conta grátis</button> ·
+        <button class="linkbtn" id="esqueci" type="button">Esqueci minha senha</button>
+      </p>
+    </section>
+  </main>
+  <script type="module" src="./js/auth-page.js"></script>
+</body>
+</html>
