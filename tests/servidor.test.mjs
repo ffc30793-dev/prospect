@@ -483,3 +483,39 @@ test("cidade: aceita variações de grafia (hífen, apóstrofo) mas continua rec
   assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Timon - MA, Brasil", "Teresina", "PI"), false);
   assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Teresina - PI, Brasil", "Teresina", "MA"), false);
 });
+
+test("busca: cidade sem resultado aproveitável tenta cidades da mesma microrregião", async () => {
+  const endParnaiba = "Rua A, 10 - Centro, Parnaíba - PI, 64200-000, Brasil";
+  const endLuis = "Rua B, 20 - Centro, Luís Correia - PI, 64220-000, Brasil";
+  const f = criarFetchPlaces({
+    "perto de": [[
+      lugar("viz1", { formattedAddress: endLuis }),
+      lugar("fora", { formattedAddress: "Rua C, 5 - Centro, Teresina - PI, 64000-000, Brasil" }) // outra microrregião
+    ]],
+    pizzaria: [[lugar("fixo", { formattedAddress: endParnaiba, nationalPhoneNumber: "(86) 3322-1234" })]],
+    "melhores": [[]], "centro": [[]]
+  });
+  const deps = criarDeps({ fetch: f });
+  const res = await chamar(criarHandlerLeads(deps), criarReq({ corpo: { ...corpoBusca, cidade: "Parnaíba" } }));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.corpo.empresas.map((e) => e.id), ["viz1"]);
+  assert.equal(res.corpo.empresas[0].cidade, "Luís Correia");
+  assert.equal(res.corpo.empresas[0].cidadeVizinha, true);
+  assert.deepEqual(res.corpo.cidadesVizinhas, ["Luís Correia"]);
+  assert.equal(res.corpo.uso.usadas, 1); // continua sendo 1 pesquisa para o usuário
+  assert.ok(res.corpo.avisos.some((a) => /cidades vizinhas/i.test(a)));
+});
+
+test("busca: sem cidades vizinhas aproveitáveis devolve vazio e a pesquisa", async () => {
+  const f = criarFetchPlaces({ "perto de": [[]], pizzaria: [[lugar("fixo", { formattedAddress: "Rua A, 10 - Centro, Parnaíba - PI, Brasil", nationalPhoneNumber: "(86) 3322-1234" })]], "melhores": [[]], "centro": [[]] });
+  const res = await chamar(criarHandlerLeads(criarDeps({ fetch: f })), criarReq({ corpo: { ...corpoBusca, cidade: "Parnaíba" } }));
+  assert.equal(res.corpo.total, 0);
+  assert.deepEqual(res.corpo.cidadesVizinhas, []);
+  assert.equal(res.corpo.uso.usadas, 0);
+});
+
+test("site: ola.click é plataforma de cardápio de terceiros, não site próprio", async () => {
+  const { classificarSite } = await import("../api/_lib/sites.js");
+  assert.equal(classificarSite("https://pizzaria-santaluz2024.ola.click").status, "terceiros");
+  assert.equal(classificarSite("https://www.pizzariabomsabor.com.br").status, "proprio");
+});

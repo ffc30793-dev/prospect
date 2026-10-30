@@ -10,7 +10,7 @@ const REDES_E_AGREGADORES = [
   "instagram.com", "facebook.com", "fb.com", "fb.me", "tiktok.com", "youtube.com", "youtu.be",
   "twitter.com", "x.com", "linkedin.com", "wa.me", "whatsapp.com", "linktr.ee", "beacons.ai",
   "bio.link", "lnk.bio", "taplink.cc", "campsite.bio", "ifood.com.br", "anotaai.com",
-  "goomer.app", "menudino.com", "olaclick.app", "mercadolivre.com.br", "shopee.com.br"
+  "goomer.app", "menudino.com", "olaclick.app", "ola.click", "olaclick.com", "mercadolivre.com.br", "shopee.com.br"
 ];
 
 const PLATAFORMAS_GRATUITAS = [

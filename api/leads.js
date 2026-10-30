@@ -4,7 +4,7 @@ import { depsReais, autenticar, erro, lerCorpoJson, responder } from "./_lib/dep
 import { CUSTO_CONTINUACAO, CUSTO_PESQUISA, PLANOS } from "./_lib/plans.js";
 import { devolverPesquisa, reservarPesquisa } from "./_lib/account.js";
 import { ErroDeEntrada, criarCursor, grupoDaBusca, lerCursor, montarConsultas, validarEntrada } from "./_lib/estrategia.js";
-import { buscarEmRodizio, enderecoDaCidade, ErroPlaces } from "./_lib/places.js";
+import { buscarEmRodizio, cidadeDoEndereco, enderecoDaCidade, ErroPlaces, limpar } from "./_lib/places.js";
 import { classificarSite, inspecionarVarios } from "./_lib/sites.js";
 import { montarLead } from "./_lib/opportunity.js";
 import { normalizar } from "../shared/catalog.js";
@@ -15,28 +15,49 @@ const ALVO_POR_PESQUISA = 40; // empresas aceitas que encerram a busca antes do 
 const MAX_REQUISICOES = 6; // teto de chamadas ao Google por pesquisa (controle de custo)
 const MAX_INSPECOES = 12; // sites analisados por pesquisa (redesign / loja virtual / cardápio)
 const VALIDADE_CURSOR_MS = 30 * 60 * 1000;
+const MAX_REQUISICOES_VIZINHAS = 2; // consultas extras ao Google quando a cidade pedida não rende nada
 const SERVICOS_QUE_INSPECIONAM = new Set(["redesign-sites", "lojas-virtuais", "cardapios-catalogos"]);
 
-// ---------- validação do município no IBGE (falha aberta se o IBGE estiver fora do ar) ----------
-const cacheMunicipios = new Map();
+// ---------- municípios no IBGE (validação + cidades da mesma microrregião) ----------
+const cacheMunicipios = new Map(); // uf -> Map(nome normalizado -> { nome, micro })
 
+async function carregarMunicipios(fetchFn, uf) {
+  if (cacheMunicipios.has(uf)) return cacheMunicipios.get(uf);
+  const controle = new AbortController();
+  const timer = setTimeout(() => controle.abort(), 3000);
+  try {
+    const r = await fetchFn(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios?orderBy=nome`, { signal: controle.signal });
+    if (!r.ok) return null;
+    const lista = await r.json();
+    const mapa = new Map(lista.map((m) => [normalizar(m.nome), { nome: m.nome, micro: m.microrregiao?.id ?? null }]));
+    cacheMunicipios.set(uf, mapa);
+    return mapa;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Falha aberta: se o IBGE estiver fora do ar, a busca segue.
 async function municipioExiste(fetchFn, uf, cidade) {
   try {
-    if (!cacheMunicipios.has(uf)) {
-      const controle = new AbortController();
-      const timer = setTimeout(() => controle.abort(), 3000);
-      try {
-        const r = await fetchFn(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios?orderBy=nome`, { signal: controle.signal });
-        if (!r.ok) return true;
-        const lista = await r.json();
-        cacheMunicipios.set(uf, new Set(lista.map((m) => normalizar(m.nome))));
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    return cacheMunicipios.get(uf).has(normalizar(cidade));
+    const mapa = await carregarMunicipios(fetchFn, uf);
+    return mapa ? mapa.has(normalizar(cidade)) : true;
   } catch {
     return true;
+  }
+}
+
+/** Outras cidades da mesma microrregião (nomes normalizados), ou null se não der para saber. */
+async function cidadesVizinhasDe(fetchFn, uf, cidade) {
+  try {
+    const mapa = await carregarMunicipios(fetchFn, uf);
+    const origem = mapa?.get(normalizar(cidade));
+    if (!origem || origem.micro == null) return null;
+    const nomes = new Set();
+    for (const [chave, m] of mapa) if (m.micro === origem.micro && chave !== normalizar(cidade)) nomes.add(limpar(m.nome));
+    return nomes.size ? nomes : null;
+  } catch {
+    return null;
   }
 }
 
@@ -113,11 +134,11 @@ export function criarHandlerLeads(deps) {
       const segmentos = segmentosAlvo(entrada);
 
       // Só entra quem pode ser abordado agora: celular (WhatsApp) e que ainda precisa do serviço.
-      const aceitar = (p) => {
+      const criarAceitador = (cidadeOk) => (p) => {
         if (!p?.id) return false;
         if (excluidos.has(p.id) || aceitos.has(p.id)) { descartados.duplicadas++; return false; }
         if (p.businessStatus && p.businessStatus !== "OPERATIONAL") { descartados.fechadas++; return false; }
-        if (!enderecoDaCidade(p.formattedAddress, entrada.cidade, entrada.uf)) { descartados.foraDaCidade++; return false; }
+        if (!cidadeOk(p)) { descartados.foraDaCidade++; return false; }
         if (ehEntidadePublica(p)) { descartados.entidadesPublicas++; return false; }
         if (!combinaComSegmento(p, segmentos)) { descartados.foraDoSegmento++; return false; }
         if (normalizarTelefoneBR(p.nationalPhoneNumber || "").tipo !== "movel") { descartados.semWhatsapp++; return false; }
@@ -128,6 +149,8 @@ export function criarHandlerLeads(deps) {
         return true;
       };
 
+      const aceitar = criarAceitador((p) => enderecoDaCidade(p.formattedAddress, entrada.cidade, entrada.uf));
+
       const busca = await buscarEmRodizio({
         fetch: deps.fetch,
         chave: chavePlaces,
@@ -137,31 +160,66 @@ export function criarHandlerLeads(deps) {
         maxRequisicoes: MAX_REQUISICOES
       });
 
-      let candidatos = [...aceitos.values()];
-
-      // Análise real dos sites (limitada) para os serviços que dependem do conteúdo da página.
-      let inspecoes = new Map();
-      let analisados = 0;
-      if (inspeciona) {
-        const comSite = (p) => p.websiteUri && ["proprio", "plataforma_gratuita"].includes(classificarSite(p.websiteUri).status);
-        const urls = candidatos.filter(comSite).map((p) => p.websiteUri).slice(0, MAX_INSPECOES);
-        inspecoes = await inspecionarVarios(urls, { fetch: deps.fetch, agora }, 5);
-        analisados = urls.length;
-        // Site que não deu para analisar nesta busca não é "oportunidade confirmada": fica de fora.
-        const antes = candidatos.length;
-        candidatos = candidatos.filter((p) => !comSite(p) || inspecoes.has(p.websiteUri));
-        descartados.naoAnalisados = antes - candidatos.length;
-      }
-
       const grupo = grupoDaBusca(entrada);
-      let empresas = candidatos.map((p) =>
-        montarLead(p, { servico: entrada.servico.id, grupo, cidade: entrada.cidade, uf: entrada.uf, agora, inspecao: inspecoes.get(p.websiteUri) })
-      );
+      let analisados = 0;
 
-      // Mostra só quem realmente precisa do serviço.
-      const antesOpp = empresas.length;
-      empresas = empresas.filter((e) => e.oportunidade.nivel !== "baixa");
-      descartados.semOportunidade = antesOpp - empresas.length;
+      // Analisa os sites (limitado), monta os leads e tira quem não precisa do serviço.
+      const avaliar = async (lista, vizinha = false) => {
+        let candidatos = lista;
+        let inspecoes = new Map();
+        if (inspeciona) {
+          const comSite = (p) => p.websiteUri && ["proprio", "plataforma_gratuita"].includes(classificarSite(p.websiteUri).status);
+          const urls = candidatos.filter(comSite).map((p) => p.websiteUri).slice(0, MAX_INSPECOES);
+          inspecoes = await inspecionarVarios(urls, { fetch: deps.fetch, agora }, 5);
+          analisados += urls.length;
+          // Site que não deu para analisar nesta busca não é "oportunidade confirmada": fica de fora.
+          const antes = candidatos.length;
+          candidatos = candidatos.filter((p) => !comSite(p) || inspecoes.has(p.websiteUri));
+          descartados.naoAnalisados += antes - candidatos.length;
+        }
+        let leads = candidatos.map((p) => {
+          const cidade = vizinha ? cidadeDoEndereco(p.formattedAddress, entrada.uf) || entrada.cidade : entrada.cidade;
+          const lead = montarLead(p, { servico: entrada.servico.id, grupo, cidade, uf: entrada.uf, agora, inspecao: inspecoes.get(p.websiteUri) });
+          if (vizinha) lead.cidadeVizinha = true;
+          return lead;
+        });
+        const antes = leads.length;
+        leads = leads.filter((e) => e.oportunidade.nivel !== "baixa");
+        descartados.semOportunidade += antes - leads.length;
+        return leads;
+      };
+
+      let empresas = await avaliar([...aceitos.values()]);
+
+      // Nada aproveitável na cidade pedida: tenta as cidades da mesma microrregião (até 2 consultas extras).
+      let requisicoesExtras = 0;
+      let cidadesVizinhas = [];
+      if (!empresas.length && !cursor) {
+        const vizinhas = await cidadesVizinhasDe(deps.fetch, entrada.uf, entrada.cidade);
+        if (vizinhas) {
+          const jaAvaliados = new Set(aceitos.keys());
+          const aceitarVizinha = criarAceitador((p) => {
+            const c = cidadeDoEndereco(p.formattedAddress, entrada.uf);
+            return Boolean(c) && vizinhas.has(limpar(c));
+          });
+          try {
+            const termo = montarConsultas(entrada)[0].split(" em ")[0];
+            const extra = await buscarEmRodizio({
+              fetch: deps.fetch,
+              chave: chavePlaces,
+              estados: [{ q: `${termo} perto de ${entrada.cidade}, ${entrada.estadoNome}` }],
+              aceitar: aceitarVizinha,
+              alvo,
+              maxRequisicoes: MAX_REQUISICOES_VIZINHAS
+            });
+            requisicoesExtras = extra.requisicoes;
+            empresas = await avaliar([...aceitos.values()].filter((p) => !jaAvaliados.has(p.id)), true);
+            cidadesVizinhas = [...new Set(empresas.map((e) => e.cidade))];
+          } catch (e) {
+            console.error("Busca em cidades vizinhas falhou:", e?.message); // não derruba a busca principal
+          }
+        }
+      }
 
       empresas.sort((a, b) =>
         b.temperatura.pontos - a.temperatura.pontos ||
@@ -187,6 +245,7 @@ export function criarHandlerLeads(deps) {
       const avisos = [...busca.avisos];
       if (podeContinuar) avisos.push("Resultados parciais: a fonte pode ter mais empresas. Use “Carregar mais” para continuar sem repetir as já exibidas.");
       if (cortadoPeloPlano) avisos.push(`Seu plano mostra até ${teto} empresas por pesquisa, as de maior prioridade. Só aparecem empresas com celular (WhatsApp) que ainda precisam do serviço.`);
+      if (cidadesVizinhas.length) avisos.push(`Nenhuma empresa aproveitável em ${entrada.cidade}; mostrando cidades vizinhas: ${cidadesVizinhas.join(", ")}.`);
       if (analisados) avisos.push(`Sites analisados nesta busca: ${analisados}. Os demais aparecem como “verificar”.`);
       avisos.push("Dados do cadastro público do Google Maps. Um número de celular não garante WhatsApp ativo, e “site não identificado” não confirma que a empresa não tenha site.");
 
@@ -204,7 +263,7 @@ export function criarHandlerLeads(deps) {
           segmento: entrada.segmento?.nome || entrada.termosLivres?.[0] || "",
           total: empresas.length,
           continuacao: Boolean(cursor),
-          requisicoes: busca.requisicoes
+          requisicoes: busca.requisicoes + requisicoesExtras
         });
       } catch (e) {
         console.error("Falha ao registrar histórico:", e?.message);
@@ -219,7 +278,8 @@ export function criarHandlerLeads(deps) {
         parcial,
         continuacao,
         consultas: estados.map((e) => e.q),
-        requisicoesGoogle: busca.requisicoes,
+        requisicoesGoogle: busca.requisicoes + requisicoesExtras,
+        cidadesVizinhas,
         descartados,
         avisos,
         uso: { limite: reserva.limite, usadas, disponiveis: Math.max(0, reserva.limite - usadas) },

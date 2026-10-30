@@ -137,7 +137,7 @@ export async function buscarEmRodizio({ fetch: fetchFn, chave, estados, aceitar,
 // ---------- filtros de aceitação ----------
 
 // Compara nomes ignorando acento, hífen, apóstrofo e espaços repetidos ("Mogi-Mirim" = "Mogi Mirim").
-const limpar = (t) => normalizar(t).replace(/[^a-z0-9]+/g, " ").trim();
+export const limpar = (t) => normalizar(t).replace(/[^a-z0-9]+/g, " ").trim();
 
 /** O endereço retornado pertence à cidade/UF pedida? (Text Search às vezes devolve cidades vizinhas.) */
 export function enderecoDaCidade(endereco, cidade, uf) {
@@ -151,4 +151,10 @@ export function enderecoDaCidade(endereco, cidade, uf) {
 
 export function limparCacheCurto() {
   cacheCurto.clear();
+}
+
+/** Extrai a cidade de um endereço do Google ("..., Altos - PI, 64290-000, Brasil" -> "Altos"). */
+export function cidadeDoEndereco(endereco, uf) {
+  const m = new RegExp(`,\\s*([^,]+?)\\s+-\\s+${uf}\\b`, "i").exec(String(endereco || ""));
+  return m ? m[1].trim() : "";
 }

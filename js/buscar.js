@@ -153,7 +153,7 @@ async function executar(continuar) {
       document.dispatchEvent(new CustomEvent("lf:uso"));
     }
     const lista = continuar ? [...ultimo.empresas, ...r.empresas] : r.empresas;
-    ultimo = { params, empresas: lista, continuacao: r.continuacao || "", parcial: r.parcial, avisos: r.avisos || [], descartados: r.descartados, ultimaCarga: r.total };
+    ultimo = { params, empresas: lista, continuacao: r.continuacao || "", parcial: r.parcial, avisos: r.avisos || [], descartados: r.descartados, cidadesVizinhas: r.cidadesVizinhas || [], ultimaCarga: r.total };
     gravarSessao();
     atualizarDica();
     desenharResultados();
@@ -221,6 +221,7 @@ function desenharResultados() {
 
   area.innerHTML = `
     <div class="page-head" style="margin-bottom:8px"><div><h2>${total} empresa${total > 1 ? "s" : ""} · ${esc(ultimo.params.cidade)}/${esc(ultimo.params.estado)}</h2><p class="muted small">${esc(nomeServ)}${ultimo.params.segmento ? " · " + esc(ultimo.params.segmento) : ""}</p></div></div>
+    ${ultimo.cidadesVizinhas?.length ? `<div class="notice warn" role="status">${icon("info")} Nenhuma empresa aproveitável em ${esc(ultimo.params.cidade)}. Mostrando cidades vizinhas: ${esc(ultimo.cidadesVizinhas.join(", "))}.</div>` : ""}
     ${ultimo.parcial ? `<div class="notice warn" role="status">${icon("info")} Resultados parciais: a fonte pode ter mais empresas. Use “Carregar mais” para continuar sem repetir as já exibidas.</div>` : ""}
     <div class="filters" role="group" aria-label="Filtros dos resultados">
       <div><label for="fl-site">Presença de site</label><select id="fl-site"><option value="">Todas</option><option value="sem">Site não identificado</option><option value="terceiros">Rede social / plataforma gratuita</option><option value="proprio">Site próprio</option></select></div>
@@ -247,7 +248,7 @@ function cartao(l, i) {
   const conf = { alta: "confiança alta", media: "confiança média", baixa: "confiança baixa" }[o.confianca] || "";
   return `<article class="lead t-${esc(t.nivel)}" aria-label="${esc(l.nome)}">
     <div class="lead-head"><div><h3>${esc(l.nome)}</h3><p class="muted small">${esc(l.categoria || "Categoria não informada")} · encontrado em ${esc(dataBR(l.encontradoEm))}</p></div>
-      <div class="chips"><span class="chip ${esc(t.nivel)}">${esc(({ quente: "Quente", morno: "Morno", frio: "Frio" })[t.nivel] || "—")}${t.preliminar ? " · preliminar" : ""}</span>${salvo ? `<span class="chip">${icon("check")} ${esc(rotuloSituacao(salvo.status))}</span>` : ""}</div></div>
+      <div class="chips">${l.cidadeVizinha ? `<span class="chip">${esc(l.cidade)}</span>` : ""}<span class="chip ${esc(t.nivel)}">${esc(({ quente: "Quente", morno: "Morno", frio: "Frio" })[t.nivel] || "—")}${t.preliminar ? " · preliminar" : ""}</span>${salvo ? `<span class="chip">${icon("check")} ${esc(rotuloSituacao(salvo.status))}</span>` : ""}</div></div>
     <div class="info">${linhasInfo(l)}</div>
     <div class="opp"><b>${esc(o.rotulo || "")}</b> <span class="muted small">(${esc(conf)})</span><ul>${(o.motivos || []).map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>
     <details><summary>Por que esta temperatura?</summary><div class="crit">${(t.criterios || []).map((c) => `<div>${esc(c.rotulo)} <b>+${esc(c.pontos)}</b> <span class="muted">/ ${esc(c.maximo)}</span></div>`).join("")}<div><b>Total: ${esc(t.pontos)} pontos</b> <span class="muted">(quente ≥ 75 · morno ≥ 45)${t.preliminar ? " — avaliação preliminar: parte dos sinais não pôde ser verificada." : ""}</span></div></div></details>

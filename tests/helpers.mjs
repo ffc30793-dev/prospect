@@ -128,7 +128,7 @@ export function criarFetchPlaces(paginas, { falharNaRequisicao = 0, status = 200
   const chamadas = [];
   const f = async (url, opcoes = {}) => {
     if (String(url).includes("servicodados.ibge.gov.br")) {
-      return { ok: true, status: 200, json: async () => [{ nome: "Teresina" }, { nome: "Parnaíba" }, { nome: "São Miguel do Tapuio" }] };
+      return { ok: true, status: 200, json: async () => [{ nome: "Teresina", microrregiao: { id: 1 } }, { nome: "Parnaíba", microrregiao: { id: 2 } }, { nome: "Luís Correia", microrregiao: { id: 2 } }, { nome: "São Miguel do Tapuio", microrregiao: { id: 3 } }] };
     }
     const corpo = JSON.parse(opcoes.body);
     chamadas.push(corpo);
