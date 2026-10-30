@@ -19,6 +19,8 @@ export const CAMPOS = [
   "places.rating",
   "places.userRatingCount",
   "places.photos",
+  "places.types",
+  "places.primaryType",
   "nextPageToken"
 ].join(",");
 
@@ -134,12 +136,15 @@ export async function buscarEmRodizio({ fetch: fetchFn, chave, estados, aceitar,
 
 // ---------- filtros de aceitação ----------
 
+// Compara nomes ignorando acento, hífen, apóstrofo e espaços repetidos ("Mogi-Mirim" = "Mogi Mirim").
+const limpar = (t) => normalizar(t).replace(/[^a-z0-9]+/g, " ").trim();
+
 /** O endereço retornado pertence à cidade/UF pedida? (Text Search às vezes devolve cidades vizinhas.) */
 export function enderecoDaCidade(endereco, cidade, uf) {
   const alvo = normalizar(endereco);
   if (!alvo) return false;
   if (uf === "DF") return /\bdf\b|brasilia|distrito federal/.test(alvo);
-  const cidadeOk = alvo.includes(normalizar(cidade));
+  const cidadeOk = ` ${limpar(endereco)} `.includes(` ${limpar(cidade)} `);
   const ufOk = new RegExp(`(^|[^a-z])${uf.toLowerCase()}([^a-z]|$)`).test(alvo);
   return cidadeOk && ufOk;
 }

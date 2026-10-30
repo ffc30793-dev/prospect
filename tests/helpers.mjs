@@ -107,7 +107,9 @@ export function criarDeps(extra = {}) {
 export function lugar(id, extra = {}) {
   return {
     id,
-    displayName: { text: `Empresa ${id}` },
+    displayName: { text: `Pizzaria ${id}` },
+    primaryType: "pizza_restaurant",
+    types: ["pizza_restaurant", "restaurant"],
     formattedAddress: `Rua A, 10 - Centro, Teresina - PI, 64000-000, Brasil`,
     nationalPhoneNumber: "(86) 99999-1234",
     googleMapsUri: `https://maps.google.com/?cid=${id}`,

@@ -8,6 +8,8 @@ import { buscarEmRodizio, enderecoDaCidade, ErroPlaces } from "./_lib/places.js"
 import { classificarSite, inspecionarVarios } from "./_lib/sites.js";
 import { montarLead } from "./_lib/opportunity.js";
 import { normalizar } from "../shared/catalog.js";
+import { combinaComSegmento, ehEntidadePublica, segmentosAlvo } from "./_lib/relevancia.js";
+import { normalizarTelefoneBR } from "../shared/phone.js";
 
 const ALVO_POR_PESQUISA = 40; // empresas aceitas que encerram a busca antes do teto de requisições
 const MAX_REQUISICOES = 6; // teto de chamadas ao Google por pesquisa (controle de custo)
@@ -96,16 +98,32 @@ export function criarHandlerLeads(deps) {
 
     try {
       const plano = PLANOS[reserva.plano];
+      const teto = plano.maxResultados || 0; // 0 = sem teto
+      const inspeciona = SERVICOS_QUE_INSPECIONAM.has(entrada.servico.id);
+      // Com teto, a busca para quando junta empresas suficientes (com folga para as que a avaliação descarta).
+      const alvo = teto ? Math.ceil(teto * (inspeciona ? 2.4 : 1.4)) : ALVO_POR_PESQUISA;
+
       const estados = cursor ? cursor.estados : montarConsultas(entrada).map((q) => ({ q }));
       const excluidos = new Set(entrada.excluir);
       const aceitos = new Map();
-      const descartados = { foraDaCidade: 0, fechadas: 0, duplicadas: 0, semSiteParaRedesign: 0 };
+      const descartados = {
+        foraDaCidade: 0, fechadas: 0, duplicadas: 0, entidadesPublicas: 0, foraDoSegmento: 0,
+        semWhatsapp: 0, jaTemSite: 0, semSiteParaRedesign: 0, naoAnalisados: 0, semOportunidade: 0
+      };
+      const segmentos = segmentosAlvo(entrada);
 
+      // Só entra quem pode ser abordado agora: celular (WhatsApp) e que ainda precisa do serviço.
       const aceitar = (p) => {
         if (!p?.id) return false;
         if (excluidos.has(p.id) || aceitos.has(p.id)) { descartados.duplicadas++; return false; }
         if (p.businessStatus && p.businessStatus !== "OPERATIONAL") { descartados.fechadas++; return false; }
         if (!enderecoDaCidade(p.formattedAddress, entrada.cidade, entrada.uf)) { descartados.foraDaCidade++; return false; }
+        if (ehEntidadePublica(p)) { descartados.entidadesPublicas++; return false; }
+        if (!combinaComSegmento(p, segmentos)) { descartados.foraDoSegmento++; return false; }
+        if (normalizarTelefoneBR(p.nationalPhoneNumber || "").tipo !== "movel") { descartados.semWhatsapp++; return false; }
+        const siteStatus = classificarSite(p.websiteUri).status;
+        if (entrada.servico.exigeSite && !["proprio", "plataforma_gratuita"].includes(siteStatus)) { descartados.semSiteParaRedesign++; return false; }
+        if (entrada.servico.id === "criacao-sites" && siteStatus === "proprio") { descartados.jaTemSite++; return false; }
         aceitos.set(p.id, p);
         return true;
       };
@@ -115,35 +133,35 @@ export function criarHandlerLeads(deps) {
         chave: chavePlaces,
         estados,
         aceitar,
-        alvo: ALVO_POR_PESQUISA,
+        alvo,
         maxRequisicoes: MAX_REQUISICOES
       });
 
       let candidatos = [...aceitos.values()];
 
-      // Redesign só faz sentido para quem tem algum site para avaliar.
-      if (entrada.servico.exigeSite) {
-        const antes = candidatos.length;
-        candidatos = candidatos.filter((p) => ["proprio", "plataforma_gratuita"].includes(classificarSite(p.websiteUri).status));
-        descartados.semSiteParaRedesign = antes - candidatos.length;
-      }
-
       // Análise real dos sites (limitada) para os serviços que dependem do conteúdo da página.
       let inspecoes = new Map();
       let analisados = 0;
-      if (SERVICOS_QUE_INSPECIONAM.has(entrada.servico.id)) {
-        const urls = candidatos
-          .map((p) => p.websiteUri)
-          .filter((u) => u && ["proprio", "plataforma_gratuita"].includes(classificarSite(u).status))
-          .slice(0, MAX_INSPECOES);
+      if (inspeciona) {
+        const comSite = (p) => p.websiteUri && ["proprio", "plataforma_gratuita"].includes(classificarSite(p.websiteUri).status);
+        const urls = candidatos.filter(comSite).map((p) => p.websiteUri).slice(0, MAX_INSPECOES);
         inspecoes = await inspecionarVarios(urls, { fetch: deps.fetch, agora }, 5);
         analisados = urls.length;
+        // Site que não deu para analisar nesta busca não é "oportunidade confirmada": fica de fora.
+        const antes = candidatos.length;
+        candidatos = candidatos.filter((p) => !comSite(p) || inspecoes.has(p.websiteUri));
+        descartados.naoAnalisados = antes - candidatos.length;
       }
 
       const grupo = grupoDaBusca(entrada);
       let empresas = candidatos.map((p) =>
         montarLead(p, { servico: entrada.servico.id, grupo, cidade: entrada.cidade, uf: entrada.uf, agora, inspecao: inspecoes.get(p.websiteUri) })
       );
+
+      // Mostra só quem realmente precisa do serviço.
+      const antesOpp = empresas.length;
+      empresas = empresas.filter((e) => e.oportunidade.nivel !== "baixa");
+      descartados.semOportunidade = antesOpp - empresas.length;
 
       empresas.sort((a, b) =>
         b.temperatura.pontos - a.temperatura.pontos ||
@@ -152,8 +170,8 @@ export function criarHandlerLeads(deps) {
       );
 
       let cortadoPeloPlano = false;
-      if (plano.maxResultados && empresas.length > plano.maxResultados) {
-        empresas = empresas.slice(0, plano.maxResultados);
+      if (teto && empresas.length > teto) {
+        empresas = empresas.slice(0, teto);
         cortadoPeloPlano = true;
       }
 
@@ -164,14 +182,15 @@ export function criarHandlerLeads(deps) {
         usadas -= custo;
       }
 
-      const parcial = busca.restam || busca.falhaParcial || cortadoPeloPlano;
+      const podeContinuar = busca.restam && !teto; // plano com teto: 1 pesquisa = até N empresas, sem "carregar mais"
+      const parcial = podeContinuar || busca.falhaParcial;
       const avisos = [...busca.avisos];
-      if (busca.restam) avisos.push("Resultados parciais: a fonte pode ter mais empresas. Use “Carregar mais” para continuar sem repetir as já exibidas.");
-      if (cortadoPeloPlano) avisos.push(`Seu plano mostra até ${plano.maxResultados} empresas por pesquisa.`);
+      if (podeContinuar) avisos.push("Resultados parciais: a fonte pode ter mais empresas. Use “Carregar mais” para continuar sem repetir as já exibidas.");
+      if (cortadoPeloPlano) avisos.push(`Seu plano mostra até ${teto} empresas por pesquisa, as de maior prioridade. Só aparecem empresas com celular (WhatsApp) que ainda precisam do serviço.`);
       if (analisados) avisos.push(`Sites analisados nesta busca: ${analisados}. Os demais aparecem como “verificar”.`);
       avisos.push("Dados do cadastro público do Google Maps. Um número de celular não garante WhatsApp ativo, e “site não identificado” não confirma que a empresa não tenha site.");
 
-      const continuacao = busca.restam
+      const continuacao = podeContinuar
         ? criarCursor({ uid: usuario.uid, uf: entrada.uf, cidade: entrada.cidade, servico: entrada.servico.id, segmento: chaveSegmento, estados: busca.estados, exp: agora.getTime() + VALIDADE_CURSOR_MS }, deps.segredoCursor)
         : "";
 

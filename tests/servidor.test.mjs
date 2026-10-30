@@ -6,7 +6,7 @@ import { criarHandlerLeads } from "../api/leads.js";
 import { criarHandlerConta } from "../api/account.js";
 import { criarHandlerWebhook } from "../api/cakto-webhook.js";
 import { planoEfetivo, reservarPesquisa, devolverPesquisa, diaLocal, resumoConta } from "../api/_lib/account.js";
-import { limparCacheCurto } from "../api/_lib/places.js";
+import { limparCacheCurto, enderecoDaCidade } from "../api/_lib/places.js";
 import { montarLead } from "../api/_lib/opportunity.js";
 
 const corpoBusca = { estado: "PI", cidade: "Teresina", segmento: "Pizzaria", servico: "criacao-sites" };
@@ -16,6 +16,13 @@ const chamar = async (handler, req) => { const res = criarRes(); await handler(r
 const muitos = (prefixo, n, extra = () => ({})) => Array.from({ length: n }, (_, i) => lugar(`${prefixo}${i}`, extra(i)));
 
 test.beforeEach(() => limparCacheCurto());
+
+// Conta PRO ativa (sem teto de resultados por pesquisa) — o plano grátis mostra no máximo 10.
+const virarPro = (deps) => deps.db.collection("accounts").doc("ana").set({
+  plano: "PRO",
+  assinatura: { status: "ativa", renovaEm: new Date(AGORA.getTime() + 5 * 86400000) },
+  uso: { dia: "", contagem: 0 }
+});
 
 // ================= conta / cota =================
 test("plano efetivo: pago só vale com assinatura ativa e no prazo", () => {
@@ -142,6 +149,7 @@ test("busca: respeita o teto de requisições ao Google e oferece continuação 
   const paginas = Array.from({ length: 8 }, (_, p) => muitos(`q${p}_`, 20));
   const f = criarFetchPlaces({ pizzaria: paginas, "melhores": [[]], "centro": [[]] });
   const deps = criarDeps({ fetch: f, env: {} });
+  await virarPro(deps);
   const h = criarHandlerLeads(deps);
 
   const r1 = await chamar(h, criarReq({ corpo: corpoBusca }));
@@ -164,9 +172,12 @@ test("busca: respeita o teto de requisições ao Google e oferece continuação 
 test("busca: continuação adulterada, de outro usuário ou de outra cidade é recusada", async () => {
   const paginas = Array.from({ length: 8 }, (_, p) => muitos(`z${p}_`, 20));
   const f = criarFetchPlaces({ pizzaria: paginas, "melhores": [[]], "centro": [[]] });
-  const h = criarHandlerLeads(criarDeps({ fetch: f }));
+  const deps = criarDeps({ fetch: f });
+  await virarPro(deps);
+  const h = criarHandlerLeads(deps);
   const r1 = await chamar(h, criarReq({ corpo: corpoBusca }));
   const cont = r1.corpo.continuacao;
+  assert.ok(cont);
 
   assert.equal((await chamar(h, criarReq({ corpo: { ...corpoBusca, continuacao: cont + "x" } }))).statusCode, 400);
   assert.equal((await chamar(h, criarReq({ token: "tok-bia", corpo: { ...corpoBusca, continuacao: cont } }))).statusCode, 400);
@@ -244,7 +255,7 @@ test("busca: grava histórico (somente metadados) na subcoleção do usuário", 
   assert.equal(chaves.length, 1);
   const reg = deps.db._dados.get(chaves[0]);
   assert.equal(reg.total, 2);
-  assert.equal(JSON.stringify(reg).includes("Empresa a"), false); // nenhum conteúdo do Google armazenado
+  assert.equal(JSON.stringify(reg).includes("Pizzaria a"), false); // nenhum conteúdo do Google armazenado
 });
 
 // ================= serviços mudam os resultados =================
@@ -265,8 +276,8 @@ test("serviço: o mesmo conjunto de empresas é avaliado de formas diferentes po
   const porId = Object.fromEntries(sites.corpo.empresas.map((e) => [e.id, e]));
   assert.equal(porId.semsite.oportunidade.nivel, "provavel");
   assert.equal(porId.insta.oportunidade.nivel, "provavel");
-  assert.equal(porId.proprio.oportunidade.nivel, "baixa");
-  assert.ok(sites.corpo.empresas[2].id === "proprio", "empresa com site próprio vai para o fim em criação de sites");
+  assert.equal(porId.proprio, undefined, "quem já tem site próprio não aparece em criação de sites");
+  assert.equal(sites.corpo.descartados.jaTemSite, 1);
   assert.match(porId.semsite.oportunidade.motivos[0], /não confirma/i); // nunca afirma "sem site"
 
   const redesign = await rodar("redesign-sites");
@@ -419,4 +430,56 @@ test("webhook: renovação estende o ciclo", async () => {
   const conta = (await deps.db.collection("accounts").doc("ana").get()).data();
   assert.ok(conta.assinatura.renovaEm.getTime() > AGORA.getTime() + 45 * 86400000);
   assert.equal(resumoConta(conta, mais20).statusAssinatura, "ativa");
+});
+
+
+// ================= só aparece quem pode ser abordado e precisa do serviço =================
+test("busca: plano grátis mostra no máximo 10 empresas e não oferece \"carregar mais\"", async () => {
+  const f = criarFetchPlaces({ pizzaria: [muitos("g", 20), muitos("h", 20)], "melhores": [[]], "centro": [[]] });
+  const deps = criarDeps({ fetch: f });
+  const res = await chamar(criarHandlerLeads(deps), criarReq({ corpo: corpoBusca }));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.empresas.length, 10);
+  assert.equal(res.corpo.continuacao, "");
+  assert.equal(res.corpo.parcial, false);
+  assert.ok(res.corpo.avisos.some((a) => /até 10 empresas/.test(a)));
+  assert.equal(res.corpo.uso.usadas, 1);
+});
+
+test("busca: descarta Correios, prefeitura, .gov.br, outro tipo de negócio e quem não tem celular", async () => {
+  const f = criarFetchPlaces({
+    pizzaria: [[
+      lugar("ok1"),
+      lugar("correios", { displayName: { text: "Correios" }, primaryType: "post_office", types: ["post_office"] }),
+      lugar("pref", { displayName: { text: "Prefeitura Municipal de Teresina" }, primaryType: "local_government_office", types: ["local_government_office"], websiteUri: "https://teresina.pi.gov.br" }),
+      lugar("outro", { displayName: { text: "Mecânica do Zé" }, primaryType: "car_repair", types: ["car_repair"] }),
+      lugar("fixo", { nationalPhoneNumber: "(86) 3222-1234" }),
+      lugar("semtel", { nationalPhoneNumber: "" }),
+      lugar("temsite", { websiteUri: "https://www.pizzariabomsabor.com.br" })
+    ]],
+    "melhores": [[]], "centro": [[]]
+  });
+  const res = await chamar(criarHandlerLeads(criarDeps({ fetch: f })), criarReq({ corpo: corpoBusca }));
+  assert.deepEqual(res.corpo.empresas.map((e) => e.id), ["ok1"]);
+  const d = res.corpo.descartados;
+  assert.equal(d.entidadesPublicas, 2);
+  assert.equal(d.foraDoSegmento, 1);
+  assert.equal(d.semWhatsapp, 2);
+  assert.equal(d.jaTemSite, 1);
+  assert.ok(res.corpo.empresas.every((e) => e.whatsapp));
+});
+
+test("busca: sem nenhuma empresa aproveitável devolve a pesquisa e informa os motivos", async () => {
+  const f = criarFetchPlaces({ pizzaria: [[lugar("fixo", { nationalPhoneNumber: "(86) 3222-1234" })]], "melhores": [[]], "centro": [[]] });
+  const res = await chamar(criarHandlerLeads(criarDeps({ fetch: f })), criarReq({ corpo: corpoBusca }));
+  assert.equal(res.corpo.total, 0);
+  assert.equal(res.corpo.descartados.semWhatsapp, 1);
+  assert.equal(res.corpo.uso.usadas, 0); // pesquisa devolvida
+});
+
+test("cidade: aceita variações de grafia (hífen, apóstrofo) mas continua recusando outra cidade", () => {
+  assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Mogi-Mirim - SP, 13800-000, Brasil", "Mogi Mirim", "SP"), true);
+  assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Sant'Ana do Livramento - RS, Brasil", "Sant Ana do Livramento", "RS"), true);
+  assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Timon - MA, Brasil", "Teresina", "PI"), false);
+  assert.equal(enderecoDaCidade("Rua A, 1 - Centro, Teresina - PI, Brasil", "Teresina", "MA"), false);
 });

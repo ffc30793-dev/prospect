@@ -8,10 +8,9 @@ export const PLANOS = {
     nome: "Grátis",
     preco: 0,
     limiteDiario: 5,
-    // null = sem teto por pesquisa. Os valores antigos (6/15/50 empresas) existem em js/credits.js e
-    // backend/app-config.js, mas a API em produção nunca os aplicou. Definir aqui se quiser ativá-los.
-    maxResultados: null,
-    recursos: ["Busca de empresas", "Resultados organizados", "Abordagem básica"]
+    // Máximo de empresas exibidas por pesquisa (null = sem teto). Grátis: 5 pesquisas/dia × 10 empresas.
+    maxResultados: 10,
+    recursos: ["5 pesquisas por dia", "10 empresas por pesquisa", "Abordagem básica"]
   },
   PRO: {
     id: "PRO",

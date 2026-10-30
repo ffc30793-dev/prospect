@@ -173,6 +173,24 @@ async function executar(continuar) {
   }
 }
 
+// Explica, com os números que o servidor devolve, por que a busca não trouxe empresas.
+function motivoVazio(d, servicoId) {
+  if (!d) return "Tente outra cidade, outro segmento ou outro serviço.";
+  const linhas = [];
+  if (d.semWhatsapp) linhas.push(`${d.semWhatsapp} sem celular (WhatsApp)`);
+  if (d.jaTemSite) linhas.push(`${d.jaTemSite} já têm site próprio`);
+  if (d.semSiteParaRedesign) linhas.push(`${d.semSiteParaRedesign} sem site para redesenhar`);
+  if (d.semOportunidade) linhas.push(`${d.semOportunidade} sem necessidade do serviço`);
+  if (d.naoAnalisados) linhas.push(`${d.naoAnalisados} com site que não deu para analisar`);
+  if (d.foraDoSegmento) linhas.push(`${d.foraDoSegmento} de outro tipo de negócio`);
+  if (d.entidadesPublicas) linhas.push(`${d.entidadesPublicas} órgãos públicos/instituições`);
+  if (d.foraDaCidade) linhas.push(`${d.foraDaCidade} de outra cidade`);
+  const dica = servicoId === "redesign-sites"
+    ? "Em cidade pequena quase ninguém tem site: tente uma cidade maior ou o serviço “Criação de sites”."
+    : "Tente uma cidade maior, outro segmento ou outro serviço.";
+  return linhas.length ? `O Google devolveu empresas, mas foram descartadas: ${linhas.join(", ")}. ${dica}` : `O Google não encontrou empresas para esta busca. ${dica}`;
+}
+
 function filtrar(lista) {
   const fs = $("#fl-site")?.value || "", fc = $("#fl-contato")?.value || "", fsit = $("#fl-situacao")?.value || "";
   return lista.filter((l) => {
@@ -197,7 +215,7 @@ function desenharResultados() {
   const nomeServ = acharServico(ultimo.params.servico)?.nome || "";
 
   if (!total) {
-    area.innerHTML = vazio("search", "Nenhuma empresa encontrada", "Tente outra cidade, outro segmento ou outro serviço.");
+    area.innerHTML = vazio("search", "Nenhuma empresa encontrada", motivoVazio(ultimo.descartados, ultimo.params.servico));
     etapas(); return;
   }
 
