@@ -59,6 +59,9 @@ window.addEventListener("online", () => { sinalizarOffline(); toast("Conexão re
 window.addEventListener("offline", sinalizarOffline);
 sinalizarOffline();
 
+// Nunca deixa a tela de carregamento presa: se o Firebase ou a API demorarem, abre o painel mesmo assim.
+const comTempo = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r("tempo"), ms))]);
+
 let iniciado = false;
 onAuthStateChanged(auth, async (user) => {
   if (!user) { location.replace("./index.html"); return; } // rota privada
@@ -72,7 +75,8 @@ onAuthStateChanged(auth, async (user) => {
   // Plano e uso: vêm do servidor.
   const contaP = api("/api/account").then((c) => { estado.conta = c; estado.contaErro = ""; })
     .catch((e) => { estado.contaErro = e.message; });
-  await Promise.all([perfilP, contaP]);
+  const r = await comTempo(Promise.all([perfilP, contaP]), 12000);
+  if (r === "tempo") toast("Conexão lenta: alguns dados ainda estão carregando.", "err");
   pintarTopo();
   $("#splash").remove();
   await navegar();
